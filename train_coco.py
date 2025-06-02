@@ -227,16 +227,19 @@ if __name__ == "__main__":
         train_ds,
         batch_size=config["train_batch_size"],
         shuffle=True,
-        num_workers=os.cpu_count(),
+        num_workers= 2, #os.cpu_count(),
         pin_memory=True,
+        persistent_workers = True,
     )
 
     val_dl = td.DataLoader(
         val_ds,
         batch_size=config["val_batch_size"],
         shuffle=False,
-        num_workers=os.cpu_count(),
+        num_workers=2, #os.cpu_count(),
         pin_memory=True,
+        persistent_workers = True,
+
     )
 
     model = LitMobileCLiP(config)
@@ -274,7 +277,7 @@ if __name__ == "__main__":
         accelerator="cuda",
         strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
         devices=torch.cuda.device_count(),
-        precision="16-mixed",
+        precision="32" ,#"16-mixed",
         max_epochs=max_epochs,
         callbacks=callbacks,
         logger=logger,

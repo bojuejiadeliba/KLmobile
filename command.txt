@@ -1,0 +1,3 @@
+ python train_coco.py --train_data_path "D:\AU\Dissertation\KLCaption\data\coco2017\train2017_coco.csv" --val_data_path "D:\AU\Dissertation\KLCaption\data\coco2017\val2017_coco.csv" --max_epochs 3 --data_size 0.01 --checkpoint_dir "D:\AU\Dissertation\KLMobileProject\checkpoints" --checkpoint_filename "clip_mobile_test" --config_path ./configs/config.yaml
+
+python evaluate_models.py   --dataset cifar10   --model_checkpoint "D:\AU\Dissertation\KLMobileProject\checkpoints\clip_mobile_test-v1.ckpt"   --config_path "D:\AU\Dissertation\KLMobileProject\configs\config.yaml"   --prompt "a photo of a"   --root_dir "./eval_datasets"

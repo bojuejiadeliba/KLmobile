@@ -26,11 +26,28 @@ class MIProjection(nn.Module):
     def reset_parameters(self):
         eye_mask = torch.zeros(self.proj_dim, self.inp_dim).bool()
 
-        for i in range(self.inp_dim):
-            eye_mask[i, i] = 1
+        # 🔧 FIX 1: Calculate safe iteration range
+        min_dim = min(self.proj_dim, self.inp_dim)
+
+        # 🔧 FIX 2: Add explicit bounds checking
+        for i in range(min_dim):
+            # 🔧 FIX 3: Double-check bounds before assignment
+            if i < eye_mask.shape[0] and i < eye_mask.shape[1]:
+                eye_mask[i, i] = 1
+            else:
+                # 🔧 FIX 4: Safe fallback if something is still wrong
+                print(f"Warning: Skipping index {i} - out of bounds for shape {eye_mask.shape}")
+                break
 
         self.feat_shortcut.weight.data.uniform_(-0.01, 0.01)
-        self.feat_shortcut.weight.data.masked_fill_(eye_mask, 1.0)
+
+        # 🔧 FIX 5: Safe shape checking before applying mask
+        if eye_mask.shape[0] <= self.feat_shortcut.weight.data.shape[0] and \
+                eye_mask.shape[1] <= self.feat_shortcut.weight.data.shape[1]:
+            self.feat_shortcut.weight.data.masked_fill_(eye_mask, 1.0)
+        else:
+            # 🔧 FIX 6: Graceful fallback - skip identity init if shapes don't match
+            pass
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.feat_nonlinear(x) + self.feat_shortcut(x)

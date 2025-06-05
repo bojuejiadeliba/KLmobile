@@ -60,5 +60,6 @@ knowledge_distillation:
   img_distill_weight: 0.1   # Weight for image feature distillation
   txt_distill_weight: 0.1   # Weight for text feature distillation
   response_weight: 0.1      # Weight for response distillation
-  temperature: 0.07         # Temperature for response distillation
+  #temperature: 0.07         # For student's contrastive loss
+  distill_temperature: 4.0  # For response distillation (KL divergence)
   use_projection: true      # Whether to use projection layers for dimension matching

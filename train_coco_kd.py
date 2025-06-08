@@ -30,6 +30,8 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from transformers import CLIPTokenizerFast, ConvBertTokenizer
 
 from trainer_kd import LitMobileCLiPKD
+
+from trainer_auto_kd import LitMobileCLiPAutoKD, load_automatic_kd_config
 from utility.datasets import CocoDataset
 from utility.transform_data import (
     HorizontalFlip,
@@ -106,6 +108,14 @@ if __name__ == "__main__":
     )
 
     # Data paths
+    parser.add_argument(
+        "--auto_kd_config",
+        "-akd",
+        required=False,
+        type=str,
+        default="config_kd.yaml",  # Your automatic KD config file
+        help="Path to automatic KD configuration file"
+    )
     parser.add_argument(
         "--train_data_path",
         "-P",
@@ -297,6 +307,8 @@ if __name__ == "__main__":
     val_csv_data = val_csv_data.to_pandas()
 
     # Load configuration
+
+
     print(f"Loading config from: {config_path}")
     config = {}
     with open(config_path, "r") as fp:
@@ -306,18 +318,38 @@ if __name__ == "__main__":
             print(f"Error in config file: {exc}")
             sys.exit(1)
 
-    # Add knowledge distillation parameters to config
-    if "knowledge_distillation" not in config:
-        config["knowledge_distillation"] = {}
 
-    config["knowledge_distillation"]["teacher_model"] = args.teacher_model
-    config["knowledge_distillation"]["original_weight"] = args.original_weight
-    config["knowledge_distillation"]["img_distill_weight"] = args.img_distill_weight
-    config["knowledge_distillation"]["txt_distill_weight"] = args.txt_distill_weight
-    config["knowledge_distillation"]["response_weight"] = args.response_weight
-    #config["knowledge_distillation"]["temperature"] = args.temperature
-    config["knowledge_distillation"]["distill_temperature"] = args.distill_temperature
+    # Load automatic KD configuration
+    auto_kd_config_path = args.auto_kd_config
+    auto_kd_config = load_automatic_kd_config(auto_kd_config_path)
 
+    # Merge automatic KD config with main config
+    if auto_kd_config:
+        print(f"🤖 Loading automatic KD config from: {auto_kd_config_path}")
+        config.update(auto_kd_config)
+        # For auto KD, ensure knowledge_distillation section exists for base_checkpoint
+        if "knowledge_distillation" not in config:
+            config["knowledge_distillation"] = {}
+    else:
+        print("⚠️ No automatic KD config found, using manual parameters")
+        # Set up manual KD parameters from command line arguments
+        if "knowledge_distillation" not in config:
+            config["knowledge_distillation"] = {}
+
+        kd_config = config["knowledge_distillation"]
+
+        # Use config values if they exist, otherwise use command line args
+        config["knowledge_distillation"]["teacher_model"] = kd_config.get("teacher_model", args.teacher_model)
+        config["knowledge_distillation"]["original_weight"] = kd_config.get("original_weight", args.original_weight)
+        config["knowledge_distillation"]["img_distill_weight"] = kd_config.get("img_distill_weight",
+                                                                               args.img_distill_weight)
+        config["knowledge_distillation"]["txt_distill_weight"] = kd_config.get("txt_distill_weight",
+                                                                               args.txt_distill_weight)
+        config["knowledge_distillation"]["response_weight"] = kd_config.get("response_weight", args.response_weight)
+        config["knowledge_distillation"]["distill_temperature"] = kd_config.get("distill_temperature",
+                                                                                args.distill_temperature)
+
+    # Add base checkpoint to both auto and manual configurations
     if base_checkpoint:
         config["knowledge_distillation"]["base_checkpoint"] = base_checkpoint
 
@@ -405,7 +437,13 @@ if __name__ == "__main__":
     # Create model
     print("Creating KD model...")
     print(f"🔍 Passing base_checkpoint to model: '{base_checkpoint}'")
-    model = LitMobileCLiPKD(config, base_checkpoint=base_checkpoint)
+    #model = LitMobileCLiPKD(config, base_checkpoint=base_checkpoint)
+    if auto_kd_config:
+        print("🚀 Using Automatic Knowledge Distillation")
+        model = LitMobileCLiPAutoKD(config, base_checkpoint=base_checkpoint)
+    else:
+        print("🔧 Using Manual Knowledge Distillation")
+        model = LitMobileCLiPKD(config, base_checkpoint=base_checkpoint)
 
     # Setup callbacks
     print("Setting up training callbacks...")
@@ -462,19 +500,50 @@ if __name__ == "__main__":
 
     # Create trainer
     print("Creating trainer...")
-    trainer = pl.Trainer(
-        accelerator="cuda",
-        strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
-        devices=torch.cuda.device_count(),
-        precision=32, ##"16-mixed"
-        max_epochs=max_epochs,
-        callbacks=callbacks,
-        logger=logger,
-        gradient_clip_val=config.get("clip_grad_val", 1.0),
-        gradient_clip_algorithm="value",
-        accumulate_grad_batches=accumulate_grad_batches,
-        log_every_n_steps=10,
-    )
+    if auto_kd_config and "max_steps" in config:
+        print(f"🎯 Training with automatic KD for {config['max_steps']} steps")
+        trainer = pl.Trainer(
+            accelerator="cuda",
+            strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
+            devices=torch.cuda.device_count(),
+            precision=32,  # "16-mixed",
+            max_steps=config["max_steps"],  # Use steps instead of epochs
+            callbacks=callbacks,  # Use ALL callbacks, not just a subset
+            logger=logger,
+            gradient_clip_val=config.get("clip_grad_val", 1.0),
+            gradient_clip_algorithm="value",
+            val_check_interval=500,  # Validate every 500 steps
+            accumulate_grad_batches=accumulate_grad_batches,
+            log_every_n_steps=10,
+        )
+    else:
+        print(f"🎯 Training with manual KD for {max_epochs} epochs")
+        trainer = pl.Trainer(
+            accelerator="cuda",
+            strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
+            devices=torch.cuda.device_count(),
+            precision=32,  # "16-mixed",
+            max_epochs=max_epochs,
+            callbacks=callbacks,  # Use ALL callbacks
+            logger=logger,
+            gradient_clip_val=config.get("clip_grad_val", 1.0),
+            gradient_clip_algorithm="value",
+            accumulate_grad_batches=accumulate_grad_batches,
+            log_every_n_steps=10,
+        )
+    # trainer = pl.Trainer(
+    #     accelerator="cuda",
+    #     strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
+    #     devices=torch.cuda.device_count(),
+    #     precision=32, ##"16-mixed"
+    #     max_epochs=max_epochs,
+    #     callbacks=callbacks,
+    #     logger=logger,
+    #     gradient_clip_val=config.get("clip_grad_val", 1.0),
+    #     gradient_clip_algorithm="value",
+    #     accumulate_grad_batches=accumulate_grad_batches,
+    #     log_every_n_steps=10,
+    # )
 
     # Train the model
     print("Starting training...")

@@ -490,17 +490,23 @@ if __name__ == "__main__":
 
     elif dataset_name == "caltech_256":
         print(f"\n=== Evaluating on Caltech-256 dataset ===")
+        class RepeatChannels:
+            def __call__(self, tensor):
+                if tensor.shape[0] == 1:
+                    return tensor.repeat(3, 1, 1)
+                return tensor
         transformations_caltech = torchvision.transforms.Compose(
             [
                 torchvision.transforms.Resize((224, 224)),
                 torchvision.transforms.ToTensor(),
-                torchvision.transforms.Lambda(
-                    lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
-                ),
+                RepeatChannels(),
+                # torchvision.transforms.Lambda(
+                #     lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
+                # ),
             ]
         )
         caltech_dataset = torchvision.datasets.Caltech256(
-            root=root_dir, transform=transformations_caltech, download=True
+            root=root_dir, transform=transformations_caltech, download=False
         )
 
         meta_path = os.path.join(root_dir, "caltech256/caltech_labels.json")
@@ -521,7 +527,7 @@ if __name__ == "__main__":
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model, device=device)
         test_dl = td.DataLoader(
-            caltech_dataset, batch_size=batch_size, shuffle=False, num_workers=2
+            caltech_dataset, batch_size=batch_size, shuffle=False, num_workers=0
         )
 
         results = evaluate(test_dl, model, txt_tensors, device, processor)

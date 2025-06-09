@@ -434,7 +434,7 @@ if __name__ == "__main__":
             ]
         )
         caltech_dataset = torchvision.datasets.Caltech256(
-            root=root_dir, transform=transformations_caltech, download=True
+            root=root_dir, transform=transformations_caltech, download=False
         )
 
         meta_path = os.path.join(root_dir, "caltech256/caltech_labels.json")
@@ -453,7 +453,7 @@ if __name__ == "__main__":
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
         test_dl = td.DataLoader(
-            caltech_dataset, batch_size=1, shuffle=False, num_workers=1
+            caltech_dataset, batch_size=1, shuffle=False, num_workers=0
         )
 
         acc = evaluate(test_dl, model, txt_tensors)

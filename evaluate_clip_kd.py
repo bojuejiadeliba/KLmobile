@@ -499,10 +499,13 @@ if __name__ == "__main__":
             [
                 torchvision.transforms.Resize((224, 224)),
                 torchvision.transforms.ToTensor(),
-                RepeatChannels(),
-                # torchvision.transforms.Lambda(
-                #     lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
-                # ),
+                #RepeatChannels(),
+                torchvision.transforms.Lambda(
+                    lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
+                ),
+                torchvision.transforms.Normalize(
+                    mean=IMAGENET_COLOR_MEAN, std=IMAGENET_COLOR_STD
+                ),
             ]
         )
         caltech_dataset = torchvision.datasets.Caltech256(

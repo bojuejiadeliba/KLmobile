@@ -1,10 +1,10 @@
 # config_automatic_kd.yaml
 knowledge_distillation:
   teacher_model: "openai/clip-vit-base-patch32"
-  original_weight: 0.7
-  img_distill_weight: 0.15
-  txt_distill_weight: 0.15
-  response_weight: 0.0  # Start with 0, will increase in phase 3
+#  original_weight: 0.7
+#  img_distill_weight: 0.15
+#  txt_distill_weight: 0.15
+#  response_weight: 0.0  # Start with 0, will increase in phase 3
   distill_temperature: 4.0
 # Automatic Knowledge Distillation Configuration
 automatic_kd:
@@ -75,8 +75,14 @@ clip_model:
 # Training settings
 train_batch_size: 16
 val_batch_size: 32
-max_steps: 5000  # Use steps instead of epochs for better control
+#max_steps: 5000  # Use steps instead of epochs for better control
+max_epochs: 30  # Maximum epochs to run
 
 # Optimizer (automatic setup)
 base_lr: 1e-4
 weight_decay: 1e-5
+
+logging:
+  log_every_n_steps: 10
+  save_weights_every: 50  # Save weight snapshots
+  validation_frequency: 500  # Validate every 500 steps

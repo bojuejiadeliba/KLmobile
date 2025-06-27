@@ -17,7 +17,7 @@ This project implements Mobile CLIP with Knowledge Distillation, a mobile-optimi
 - **Zero-Shot Learning**: Strong performance across multiple benchmark datasets
 
 ## Performance
-![performance_comparison.png](figures%2Fperformance_comparison.png)
+![Performance Comparison](media/performance_comparison.png)
 
 
 *Results show Top-1 accuracy for zero-shot classification*

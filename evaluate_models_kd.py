@@ -1,36 +1,37 @@
 """
 @author: Adityam Ghosh
 Date: 10-30-2023
+Updated for KD model evaluation
 
 """
 
 from typing import Callable, List, Dict, Any, Tuple
 import numpy as np
-import pandas as pd
+
 import torch
-import torch.nn as nn
+
 import torch.nn.functional as F
 import torch.utils.data as td
-import pytorch_lightning as pl
+
 import torchvision
 import os
-import sys
+
 import argparse
 import yaml
 import pickle
 import json
 
-from sklearn.metrics import accuracy_score, top_k_accuracy_score
-from trainer import LitMobileCLiP
+from sklearn.metrics import top_k_accuracy_score
+
 from transformers import CLIPTokenizerFast
-from utility.datasets import ZeroShotTextVisualDataset
-from PIL import Image
-from utility.transform_data import (
-    NormalizeCaption,
-    IMAGENET_COLOR_MEAN,
-    IMAGENET_COLOR_STD,
-)
-import albumentations as alb
+from utility.transform_data import IMAGENET_COLOR_MEAN, IMAGENET_COLOR_STD
+
+
+
+
+
+
+
 
 from rich.progress import (
     Progress,
@@ -49,6 +50,61 @@ torch.multiprocessing.set_sharing_strategy("file_system")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def load_student_model_from_kd_checkpoint(checkpoint_path: str, config: Dict):
+    """Load student model from KD checkpoint without Lightning wrapper"""
+    print(f"Loading student model from KD checkpoint: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = checkpoint.get('state_dict', checkpoint)
+
+    # Extract student model weights
+    student_weights = {}
+    for key, value in state_dict.items():
+        if key.startswith('clip_model.student.'):
+            new_key = key.replace('clip_model.student.', '')
+            student_weights[new_key] = value
+
+    if not student_weights:
+        raise ValueError("No student model parameters found in checkpoint")
+
+    print(f"Found {len(student_weights)} student parameters")
+
+    # DEBUG: Check config dimensions before creating model
+    print(f"\n🔍 DEBUG CONFIG DIMENSIONS:")
+    print(f"  image_model output_dim: {config.get('image_model', {}).get('output_dim', 'NOT_FOUND')}")
+    print(f"  text_model output_dim: {config.get('text_model', {}).get('output_dim', 'NOT_FOUND')}")
+    print(f"  clip_model proj_dim: {config.get('clip_model', {}).get('proj_dim', 'NOT_FOUND')}")
+
+    # Check for potential mismatches
+    img_dim = config.get('image_model', {}).get('output_dim', 0)
+    txt_dim = config.get('text_model', {}).get('output_dim', 0)
+    proj_dim = config.get('clip_model', {}).get('proj_dim', 0)
+
+    print(f"\n📊 MIProjection will be initialized with:")
+    print(f"  Image projection: inp_dim={img_dim}, proj_dim={proj_dim}")
+    print(f"  Text projection: inp_dim={txt_dim}, proj_dim={proj_dim}")
+
+    if img_dim == proj_dim == 512:
+        print(f"⚠️ POTENTIAL ISSUE: img_dim == proj_dim == 512")
+    if txt_dim == proj_dim == 512:
+        print(f"⚠️ POTENTIAL ISSUE: txt_dim == proj_dim == 512")
+
+    print(f"=" * 50)
+
+    # Create and load student model
+    from models.mobile_clip import MobileCLiP
+    student_model = MobileCLiP(config)
+
+    missing, unexpected = student_model.load_state_dict(student_weights, strict=False)
+    if missing:
+        print(f"⚠️ Missing keys: {len(missing)} parameters")
+    if unexpected:
+        print(f"⚠️ Unexpected keys: {len(unexpected)} parameters")
+
+    student_model.eval()
+    return student_model
+
+
 def text_process(txt: str, tokenizer: Callable, max_length: int) -> torch.Tensor:
     """
     Function to obtain the text captions as a torch Tensor
@@ -58,9 +114,9 @@ def text_process(txt: str, tokenizer: Callable, max_length: int) -> torch.Tensor
     txt = txt.lower()
     txt += "."
 
-    # text_transform = alb.Compose([NormalizeCaption(max_caption_length=max_length)])
-    # txt_obj = text_transform(caption=txt)
-    # txt = txt_obj["caption"]
+
+
+
 
     tok_outputs = tokenizer(
         txt,
@@ -104,7 +160,7 @@ def get_text_tensors(text_captions: List, model: Callable) -> torch.Tensor:
     return concat_text_tensor
 
 
-def evaluate(dataloader: Any, model: Callable, text_tensors: torch.Tensor) -> float:
+def evaluate(dataloader: Any, model: Callable, text_tensors: torch.Tensor) -> Dict:
     """Function to evaluate the model"""
 
     prog_bar = Progress(
@@ -140,13 +196,13 @@ def evaluate(dataloader: Any, model: Callable, text_tensors: torch.Tensor) -> fl
     true_labels = np.asarray(true_labels)
     pred_labels = np.asarray(pred_labels)
     preds = np.concatenate(preds, axis=0)
-    # preds = np.squeeze(preds, axis=1)
-    print(preds.shape)
+
+
 
     unique_preds, counts = np.unique(pred_labels, return_counts=True)
     unique_preds = unique_preds.reshape(-1, 1)
     counts = counts.reshape(-1, 1)
-    print(f"frequency of each predicted classes by the model")
+    print(f"Frequency of each predicted class by the model:")
     print(np.hstack((unique_preds, counts)))
 
     return {
@@ -202,7 +258,7 @@ def fgvc_aircraft_res(
     ]
 
     txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
-    test_dl = td.DataLoader(fgcv_dataset, batch_size=1, shuffle=False, num_workers=1)
+    test_dl = td.DataLoader(fgcv_dataset, batch_size=1, shuffle=False, num_workers=2)
     acc = evaluate(test_dl, model, txt_tensors)
 
     print(acc)
@@ -213,7 +269,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="evaluation script",
-        description="Evaluation script for the Mobile CLiP model",
+        description="Evaluation script for the Mobile CLiP model with KD",
     )
 
     parser.add_argument(
@@ -257,13 +313,33 @@ if __name__ == "__main__":
         help="the prompt template to use",
     )
 
+    parser.add_argument(
+        "--save_results",
+        "-s",
+        required=False,
+        type=str,
+        default=None,
+        help="Path to save evaluation results as JSON",
+    )
+
+    parser.add_argument(
+        "--batch_size",
+        "-b",
+        required=False,
+        type=int,
+        default=1,
+        help="Batch size for evaluation",
+    )
+
     args = parser.parse_args()
 
     root_dir = args.root_dir
     dataset_name = args.dataset
     model_checkpoint = args.model_checkpoint
     config_path = args.config_path
-    prompt_template = args.prompt.strip(" ")
+    prompt_template = args.prompt.strip()
+    save_path = args.save_results
+    batch_size = args.batch_size
 
     cfg = None
     with open(config_path, "r") as fp:
@@ -272,11 +348,14 @@ if __name__ == "__main__":
         except yaml.YAMLError as exc:
             print(exc)
 
-    # print(df.loc[df["label"].isna()])
-    # print(torch.load(model_checkpoint)["state_dict"].keys())
-    model = LitMobileCLiP.load_from_checkpoint(model_checkpoint, config=cfg)
-    model.freeze()
-    # clip_model = model.clip_model
+    # FIXED: Load student model directly from KD checkpoint
+
+    model = load_student_model_from_kd_checkpoint(model_checkpoint, cfg)
+
+    # Move to GPU
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    model = model.to(device)
 
     text_tokenizer = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32")
 
@@ -290,7 +369,11 @@ if __name__ == "__main__":
         ]
     )
 
+    # Store results
+    results = {}
+
     if dataset_name == "cifar10":
+        print(f"\n=== Evaluating on CIFAR-10 dataset ===")
         cifar10_dataset = torchvision.datasets.CIFAR10(
             root=root_dir, train=False, download=True, transform=transformations
         )
@@ -307,18 +390,22 @@ if __name__ == "__main__":
             for txt in prompts
         ]
 
+        print("\nClass labels:")
         pprint(label_map)
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
 
         test_dl = td.DataLoader(
-            cifar10_dataset, batch_size=1, shuffle=False, num_workers=1
+            cifar10_dataset, batch_size=batch_size, shuffle=False, num_workers=2
         )
 
-        acc = evaluate(test_dl, model, txt_tensors)
-        print(acc)
+        results = evaluate(test_dl, model, txt_tensors)
+        print("\nResults on CIFAR-10:")
+        print(f"Top-1 Accuracy: {results['top_1_accuracy']:.4f}")
+        print(f"Top-5 Accuracy: {results['top_5_accuracy']:.4f}")
 
     elif dataset_name == "cifar100":
+        print(f"\n=== Evaluating on CIFAR-100 dataset ===")
         cifar100_dataset = torchvision.datasets.CIFAR100(
             root=root_dir, train=False, download=True, transform=transformations
         )
@@ -334,18 +421,23 @@ if __name__ == "__main__":
             for txt in prompts
         ]
 
-        pprint(label_map)
+        print("\nFirst 10 class labels:")
+        pprint({k: v for i, (k, v) in enumerate(label_map.items()) if i < 10})
+        print(f"... (total: {len(label_map)} classes)")
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
 
         test_dl = td.DataLoader(
-            cifar100_dataset, batch_size=1, shuffle=False, num_workers=1
+            cifar100_dataset, batch_size=batch_size, shuffle=False, num_workers=2
         )
 
-        acc = evaluate(test_dl, model, txt_tensors)
-        print(acc)
+        results = evaluate(test_dl, model, txt_tensors)
+        print("\nResults on CIFAR-100:")
+        print(f"Top-1 Accuracy: {results['top_1_accuracy']:.4f}")
+        print(f"Top-5 Accuracy: {results['top_5_accuracy']:.4f}")
 
     elif dataset_name == "food101":
+        print(f"\n=== Evaluating on Food-101 dataset ===")
         food101_dataset = torchvision.datasets.Food101(
             root=root_dir, split="test", transform=transformations, download=True
         )
@@ -363,17 +455,22 @@ if __name__ == "__main__":
             for txt in prompts
         ]
 
-        pprint(label_map)
+        print("\nFirst 10 class labels:")
+        pprint({k: v for i, (k, v) in enumerate(label_map.items()) if i < 10})
+        print(f"... (total: {len(label_map)} classes)")
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
         test_dl = td.DataLoader(
-            food101_dataset, batch_size=1, shuffle=False, num_workers=1
+            food101_dataset, batch_size=batch_size, shuffle=False, num_workers=2
         )
 
-        acc = evaluate(test_dl, model, txt_tensors)
-        print(acc)
+        results = evaluate(test_dl, model, txt_tensors)
+        print("\nResults on Food-101:")
+        print(f"Top-1 Accuracy: {results['top_1_accuracy']:.4f}")
+        print(f"Top-5 Accuracy: {results['top_5_accuracy']:.4f}")
 
     elif dataset_name == "fgcv_aircraft":
+        print(f"\n=== Evaluating on FGVC Aircraft dataset ===")
         meta_path_families = os.path.join(
             root_dir, "fgvc-aircraft-2013b/data/families.txt"
         )
@@ -384,7 +481,7 @@ if __name__ == "__main__":
             root_dir, "fgvc-aircraft-2013b/data/manufacturers.txt"
         )
 
-        print("########## Annotation Level : Family ############")
+        print("\n########## Annotation Level : Family ############")
         fgvc_aircraft_res(
             root_dir=root_dir,
             annotation_level="family",
@@ -396,7 +493,7 @@ if __name__ == "__main__":
             cfg=cfg,
         )
 
-        print("########## Annotation Level : Variant ############")
+        print("\n########## Annotation Level : Variant ############")
         fgvc_aircraft_res(
             root_dir=root_dir,
             annotation_level="variant",
@@ -408,7 +505,7 @@ if __name__ == "__main__":
             cfg=cfg,
         )
 
-        print("########## Annotation Level : Manufacturer ############")
+        print("\n########## Annotation Level : Manufacturer ############")
         fgvc_aircraft_res(
             root_dir=root_dir,
             annotation_level="manufacturer",
@@ -420,19 +517,29 @@ if __name__ == "__main__":
             cfg=cfg,
         )
 
+
+
     elif dataset_name == "caltech_256":
-        transformations_caltech = torchvision.transforms.Compose(
-            [
-                torchvision.transforms.Resize((224, 224)),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Lambda(
-                    lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
-                ),
-                torchvision.transforms.Normalize(
-                    mean=IMAGENET_COLOR_MEAN, std=IMAGENET_COLOR_STD
-                ),
-            ]
-        )
+        print(f"\n=== Evaluating on Caltech-256 dataset ===")
+
+
+        class RepeatChannels:
+            def __call__(self, tensor):
+                if tensor.shape[0] == 1:
+                    return tensor.repeat(3, 1, 1)
+                return tensor
+
+
+        transformations_caltech = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((224, 224)),
+            torchvision.transforms.ToTensor(),
+            RepeatChannels(),  # ✅ FIXED
+            torchvision.transforms.Normalize(
+                mean=IMAGENET_COLOR_MEAN, std=IMAGENET_COLOR_STD
+            ),
+        ])
+
+
         caltech_dataset = torchvision.datasets.Caltech256(
             root=root_dir, transform=transformations_caltech, download=False
         )
@@ -442,7 +549,9 @@ if __name__ == "__main__":
         with open(meta_path, "r") as fp:
             meta_data = json.load(fp)
 
-        pprint(meta_data)
+        print("\nFirst 10 class labels:")
+        pprint({k: v for i, (k, v) in enumerate(meta_data.items()) if i < 10})
+        print(f"... (total: {len(meta_data)} classes)")
 
         prompts = [prompt_template + " " + labels for labels, _ in meta_data.items()]
 
@@ -453,13 +562,16 @@ if __name__ == "__main__":
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
         test_dl = td.DataLoader(
-            caltech_dataset, batch_size=1, shuffle=False, num_workers=0
+            caltech_dataset, batch_size=batch_size, shuffle=False, num_workers=0
         )
 
-        acc = evaluate(test_dl, model, txt_tensors)
-        print(acc)
+        results = evaluate(test_dl, model, txt_tensors)
+        print("\nResults on Caltech-256:")
+        print(f"Top-1 Accuracy: {results['top_1_accuracy']:.4f}")
+        print(f"Top-5 Accuracy: {results['top_5_accuracy']:.4f}")
 
     elif dataset_name == "oxford_pets":
+        print(f"\n=== Evaluating on Oxford-IIIT Pets dataset ===")
         oxford_pets_dataset = torchvision.datasets.OxfordIIITPet(
             root=root_dir,
             split="test",
@@ -473,6 +585,7 @@ if __name__ == "__main__":
         with open(meta_path, "r") as fp:
             meta_data = json.load(fp)
 
+        print("\nClass labels:")
         pprint(dict(sorted(meta_data.items(), key=lambda x: x[1])))
 
         prompts = [prompt_template + " " + labels for labels, _ in meta_data.items()]
@@ -484,8 +597,28 @@ if __name__ == "__main__":
 
         txt_tensors = get_text_tensors(text_captions=tokenized_txts, model=model)
         test_dl = td.DataLoader(
-            oxford_pets_dataset, batch_size=1, shuffle=False, num_workers=1
+            oxford_pets_dataset, batch_size=batch_size, shuffle=False, num_workers=2
         )
 
-        acc = evaluate(test_dl, model, txt_tensors)
-        print(acc)
+        results = evaluate(test_dl, model, txt_tensors)
+        print("\nResults on Oxford-IIIT Pets:")
+        print(f"Top-1 Accuracy: {results['top_1_accuracy']:.4f}")
+        print(f"Top-5 Accuracy: {results['top_5_accuracy']:.4f}")
+
+    # Save results if requested
+    if save_path and results:
+        results_to_save = {
+            "dataset": dataset_name,
+            "model": os.path.basename(model_checkpoint),
+            "prompt": prompt_template,
+            "top_1_accuracy": float(results.get("top_1_accuracy", 0)),
+            "top_5_accuracy": float(results.get("top_5_accuracy", 0)),
+            "batch_size": batch_size
+        }
+
+        print(f"\nSaving results to {save_path}")
+        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+        with open(save_path, 'w') as f:
+            json.dump(results_to_save, f, indent=2)
+
+        print("✓ Results saved successfully")
